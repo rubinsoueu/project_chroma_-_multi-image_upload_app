@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query, action, internalQuery, internalMutation } from "./_generated/server";
-import { internal } from "./_generated/api";
+import { internal, api } from "./_generated/api";
 
 export const generateUploadUrl = mutation({
   args: {},
@@ -45,6 +45,13 @@ export const getAllPhotos = query({
   },
 });
 
+export const getPhoto = query({
+    args: { id: v.id("photos") },
+    handler: async (ctx, args) => {
+        return await ctx.db.get(args.id);
+    },
+});
+
 export const cullPhotos = action({
   args: {},
   handler: async (ctx): Promise<{ rejectedCount: number }> => {
@@ -68,69 +75,77 @@ export const cullPhotos = action({
 });
 
 export const enhancePhotos = action({
-  args: {},
-  handler: async (ctx): Promise<{ enhancedCount: number }> => {
-    const photos: Array<any> = await ctx.runQuery(internal.photos.getAllPhotosInternal);
-    
-    // Enhance all photos that are not rejected
-    const photosToEnhance: Array<any> = photos.filter((photo: any) => photo.status !== "rejected");
-    let enhancedCount = 0;
-
-    for (const photo of photosToEnhance) {
-      try {
-        // Get the original image URL
-        const originalUrl = await ctx.storage.getUrl(photo.storageId);
-        if (!originalUrl) {
-          console.error(`Could not get URL for photo ${photo._id}`);
-          continue;
-        }
-
-        // Call external enhancement API
-        const enhanceResponse = await fetch("https://api.example.com/enhance", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            imageUrl: originalUrl,
-            enhancementLevel: "high",
-          }),
-        });
-
-        if (!enhanceResponse.ok) {
-          console.error(`Enhancement API failed for photo ${photo._id}: ${enhanceResponse.status}`);
-          continue;
-        }
-
-        // Get the enhanced image as a blob
-        const enhancedImageBlob = await enhanceResponse.blob();
-
-        // Store the enhanced image in Convex storage
-        const enhancedStorageId = await ctx.storage.store(enhancedImageBlob);
-
-        // Update the photo document with the new enhanced storage ID
-        await ctx.runMutation(internal.photos.updatePhotoEnhancement, {
-          photoId: photo._id,
-          enhancedStorageId: enhancedStorageId,
-          isEnhanced: true,
-        });
-
-        // Generate a random quality score between 7.5 and 9.5 for enhanced photos
-        const qualityScore = Math.random() * 2 + 7.5;
-        await ctx.runMutation(internal.photos.updateQualityScoreInternal, {
-          photoId: photo._id,
-          qualityScore: Math.round(qualityScore * 10) / 10,
-        });
-
-        enhancedCount++;
-      } catch (error) {
-        console.error(`Error enhancing photo ${photo._id}:`, error);
-        // Continue with next photo even if this one fails
-      }
+  args: { photoId: v.id("photos") }, // Assuming we enhance one photo at a time
+  handler: async (ctx, args) => {
+    // 1. Get the URL of the original image from Convex storage
+    const photo = await ctx.runQuery(api.photos.getPhoto, { id: args.photoId });
+    if (!photo ||!photo.storageId) {
+      throw new Error("Photo not found or has no storage ID");
+    }
+    const imageUrl = await ctx.storage.getUrl(photo.storageId);
+    if (!imageUrl) {
+      throw new Error("Could not get image URL");
     }
 
-    return { enhancedCount };
+    // 2. Call the Claid.ai API
+    const claidApiKey = process.env.CLAID_API_KEY;
+    if (!claidApiKey) {
+      throw new Error("Claid.ai API key is not set in environment variables.");
+    }
+
+    const response = await fetch("https://api.claid.ai/v1-beta1/image/edit", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${claidApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        "input": imageUrl,
+        "operations": {
+          "adjustments": {
+            "hdr": {}
+          }
+        },
+        "output": {
+          "format": "jpeg"
+        }
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Claid.ai API failed: ${errorText}`);
+    }
+
+    const enhancementResult = await response.json();
+    const enhancedImageUrl = enhancementResult.data.output.tmp_url;
+
+    // 3. Fetch the new enhanced image and store it back in Convex
+    const enhancedImageResponse = await fetch(enhancedImageUrl);
+    const enhancedImageBlob = await enhancedImageResponse.blob();
+    const newStorageId = await ctx.storage.store(enhancedImageBlob);
+
+    // 4. Update the photo document with the new storage ID and status
+    await ctx.runMutation(api.photos.updateEnhancedPhoto, {
+      photoId: args.photoId,
+      storageId: newStorageId,
+    });
+
+    return { success: true };
   },
+});
+
+export const updateEnhancedPhoto = mutation({
+    args: {
+        photoId: v.id("photos"),
+        storageId: v.id("_storage"),
+    },
+    handler: async (ctx, args) => {
+        await ctx.db.patch(args.photoId, {
+        storageId: args.storageId, // Replace the original storageId with the enhanced one
+        isEnhanced: true, // Add a flag to indicate enhancement
+        });
+    },
 });
 
 export const getAllPhotosInternal = internalQuery({
@@ -196,5 +211,16 @@ export const updateQualityScoreInternal = internalMutation({
     await ctx.db.patch(args.photoId, {
       qualityScore: args.qualityScore,
     });
+  },
+});
+
+export const deletePhoto = mutation({
+  args: {
+    photoId: v.id("photos"),
+    storageId: v.id("_storage"),
+  },
+  handler: async (ctx, args) => {
+    await ctx.storage.delete(args.storageId);
+    await ctx.db.delete(args.photoId);
   },
 });

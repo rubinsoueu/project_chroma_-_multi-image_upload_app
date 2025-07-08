@@ -1,11 +1,42 @@
-import { useQuery } from "convex/react";
+import { useQuery, useAction, useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { useState } from "react";
 import { Id } from "../../convex/_generated/dataModel";
+import { toast } from "sonner";
 
 export function PhotoGrid() {
   const photos = useQuery(api.photos.getAllPhotos);
+  const enhancePhoto = useAction(api.photos.enhancePhotos);
+  const deletePhoto = useMutation(api.photos.deletePhoto);
   const [selectedPhotos, setSelectedPhotos] = useState<Set<Id<"photos">>>(new Set());
+  const [enhancingPhotoId, setEnhancingPhotoId] = useState<Id<"photos"> | null>(null);
+  const [deletingPhotoId, setDeletingPhotoId] = useState<Id<"photos"> | null>(null);
+
+  const handleEnhanceClick = async (photoId: Id<"photos">) => {
+    setEnhancingPhotoId(photoId);
+    try {
+      await enhancePhoto({ photoId });
+      toast.success("Photo enhanced successfully!");
+    } catch (error) {
+      console.error("Failed to enhance photo:", error);
+      toast.error("Failed to enhance photo");
+    } finally {
+      setEnhancingPhotoId(null);
+    }
+  };
+
+  const handleDeleteClick = async (photoId: Id<"photos">, storageId: Id<"_storage">) => {
+    setDeletingPhotoId(photoId);
+    try {
+      await deletePhoto({ photoId, storageId });
+      toast.success("Photo deleted successfully!");
+    } catch (error) {
+      console.error("Failed to delete photo:", error);
+      toast.error("Failed to delete photo");
+    } finally {
+      setDeletingPhotoId(null);
+    }
+  };
 
   if (photos === undefined) {
     return (
@@ -116,17 +147,15 @@ export function PhotoGrid() {
                 <img
                   src={photo.url}
                   alt={photo.filename}
-                  className={`h-full w-full object-cover transition-transform group-hover:scale-105 ${
+                  className={`h-full w-full object-cover transition-transform ${
                     isEnhanced && !isRejected ? 'brightness-110 contrast-110' : ''
                   }`}
                 />
               )}
               
-              <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-opacity" />
-              
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/60 to-transparent p-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                <p className="text-white text-sm truncate">{photo.filename}</p>
-                <div className="flex justify-between items-center">
+              <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-40 transition-opacity flex flex-col justify-end p-3">
+                <p className="text-white text-sm truncate font-semibold opacity-0 group-hover:opacity-100 transition-opacity duration-300">{photo.filename}</p>
+                <div className="flex justify-between items-center mt-1 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
                   <p className="text-white/80 text-xs">
                     {new Date(photo.uploadedAt).toLocaleDateString()}
                   </p>
@@ -135,6 +164,31 @@ export function PhotoGrid() {
                       Quality: {photo.qualityScore}/10
                     </p>
                   )}
+                </div>
+                <div className="flex gap-2 mt-2 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                  {!isRejected && !isEnhanced && (
+                    <button
+                      onClick={() => handleEnhanceClick(photo._id)}
+                      disabled={enhancingPhotoId === photo._id || deletingPhotoId === photo._id}
+                      className="w-full text-xs px-2 py-1 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {enhancingPhotoId === photo._id ? "Enhancing..." : "Enhance"}
+                    </button>
+                  )}
+                  <a
+                    href={photo.url}
+                    download={photo.filename}
+                    className="w-full text-xs px-2 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-center"
+                  >
+                    Download
+                  </a>
+                  <button
+                    onClick={() => handleDeleteClick(photo._id, photo.storageId)}
+                    disabled={deletingPhotoId === photo._id || enhancingPhotoId === photo._id}
+                    className="w-full text-xs px-2 py-1 bg-red-600 text-white rounded-md hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {deletingPhotoId === photo._id ? "Deleting..." : "Delete"}
+                  </button>
                 </div>
               </div>
             </div>
